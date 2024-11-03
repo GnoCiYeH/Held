@@ -10,6 +10,7 @@ use utils::log_util::Log;
 mod application;
 mod buffer;
 mod config;
+mod encoding;
 mod errors;
 mod modules;
 mod plugin;

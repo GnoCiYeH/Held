@@ -1,19 +1,19 @@
-use std::{collections::HashSet, os::unix::fs::MetadataExt, path::PathBuf};
-
+use crate::ErrorKind::MissingBuffer;
 use crossterm::style::Color;
 use error_chain::bail;
 use held_core::{
     utils::{position::Position, range::Range},
     view::{colors::Colors, style::CharStyle},
 };
+use std::{collections::HashSet, os::unix::fs::MetadataExt, path::PathBuf};
 use unicode_segmentation::UnicodeSegmentation;
 use walkdir::{DirEntry, DirEntryExt, WalkDir};
 
-use super::{ModeData, ModeRenderer};
+use super::{normal::NormalRenderer, ModeData, ModeRenderer};
 use crate::{
     buffer::Buffer,
     errors::*,
-    view::{monitor::Monitor, status_data::StatusLineData},
+    view::{monitor::Monitor, region::SplitMode},
     workspace::Workspace,
 };
 pub struct WorkspaceModeData {
@@ -26,6 +26,7 @@ pub struct WorkspaceModeData {
     buffer_id: usize,
     pub prev_buffer_id: usize,
     highlight_ranges: Vec<(Range, CharStyle, Colors)>,
+    has_region: bool,
 }
 
 impl WorkspaceModeData {
@@ -37,24 +38,28 @@ impl WorkspaceModeData {
         let mut opened_dir_inos = HashSet::new();
         opened_dir_inos.insert(workspace.path.metadata()?.ino());
 
-        let prev_buffer_id = workspace.current_buffer.as_ref().unwrap().id()?;
+        let prev_buffer_id = workspace
+            .current_buffer()
+            .chain_err(|| "Not found current buffer")?
+            .id()?;
 
         let buffer = Buffer::new();
         let buffer_id = workspace.add_buffer(buffer);
-        monitor.init_buffer(workspace.current_buffer.as_mut().unwrap())?;
-
+        workspace.select_buffer(buffer_id);
+        monitor.init_buffer(workspace.current_buffer_mut().unwrap(), None)?;
         workspace.select_buffer(prev_buffer_id);
 
         Ok(WorkspaceModeData {
             path: workspace.path.clone(),
             selected_index: 0,
             opened_dir_inos,
-            buffer_id: buffer_id,
+            buffer_id,
             prev_buffer_id,
             highlight_ranges: Vec::new(),
             current_render_index: 0,
             max_index: 0,
             selected_path: workspace.path.clone(),
+            has_region: false,
         })
     }
 
@@ -67,13 +72,39 @@ impl WorkspaceModeData {
         workspace: &mut crate::workspace::Workspace,
         monitor: &mut crate::view::monitor::Monitor,
     ) -> Result<()> {
-        if !workspace.select_buffer(self.buffer_id) {
-            bail!("Not Workspace Buffer!");
+        if !self.has_region {
+            let region_opt = monitor.split_root_region(
+                SplitMode::Horizon,
+                15,
+                workspace.current_buffer().unwrap(),
+                true,
+            )?;
+
+            if let Some(region) = region_opt {
+                monitor.bind_region(
+                    workspace.get_buffer(self.buffer_id).unwrap(),
+                    region.borrow().id(),
+                )?;
+                workspace.observe_buffer(self.buffer_id);
+                region.borrow_mut().set_render_line_count_enabled(false);
+                self.has_region = true;
+            }
+
+            NormalRenderer::render_all(workspace, monitor)?;
         }
 
-        self.current_render_index = 0;
+        if let Some(current) = workspace.current_buffer() {
+            if self.buffer_id != current.id()? {
+                self.prev_buffer_id = current.id()?;
+            }
+        }
 
-        if let Some(ref mut buffer) = workspace.current_buffer {
+        workspace.observe_buffer(self.buffer_id);
+        if !workspace.change_to_target_observation_buffer(self.buffer_id, monitor)? {
+            bail!("Not Workspace Buffer!");
+        }
+        self.current_render_index = 0;
+        if let Some(buffer) = workspace.current_buffer_mut() {
             buffer.delete_range(Range::new(
                 Position { line: 0, offset: 0 },
                 Position {
@@ -89,41 +120,13 @@ impl WorkspaceModeData {
         let root = self.path.clone();
         self.render_dir(workspace, &root, &mut depth);
 
-        if let Some(ref mut buffer) = workspace.current_buffer {
+        if let Some(buffer) = workspace.current_buffer_mut() {
             buffer.cursor.move_to(Position {
                 line: self.selected_index,
                 offset: 0,
             });
             monitor.scroll_to_cursor(buffer)?;
         }
-
-        let mut presenter = monitor.build_presenter()?;
-
-        let buffer = workspace.current_buffer.as_ref().unwrap();
-        let buffer_data = buffer.data();
-        presenter.print_buffer(
-            buffer,
-            &buffer_data,
-            &workspace.syntax_set,
-            Some(&self.highlight_ranges),
-            None,
-        )?;
-
-        let mode_name_data = StatusLineData {
-            content: " WORKSPACE ".to_string(),
-            color: Colors::Inverted,
-            style: CharStyle::Bold,
-        };
-        let workspace_path_data = StatusLineData {
-            content: format!(" {}", self.path.display()),
-            color: Colors::Focused,
-            style: CharStyle::Bold,
-        };
-        presenter.print_status_line(&[mode_name_data, workspace_path_data])?;
-        presenter.present()?;
-
-        monitor.terminal.set_cursor(None)?;
-        monitor.terminal.present()?;
 
         self.update_max_index();
         Ok(())
@@ -157,7 +160,7 @@ impl WorkspaceModeData {
                     .get_buffer_with_ino(entry.ino())
                     .map(|x| x.modified());
 
-                let buffer = workspace.current_buffer.as_mut().unwrap();
+                let buffer = workspace.current_buffer_mut().unwrap();
                 let ino = entry.ino();
                 buffer.cursor.move_down();
                 self.print_entry(
@@ -185,7 +188,7 @@ impl WorkspaceModeData {
         let target_modified = workspace
             .get_buffer_with_ino(entry.ino())
             .map(|x| x.modified());
-        let buffer = workspace.current_buffer.as_mut().unwrap();
+        let buffer = workspace.current_buffer_mut().unwrap();
         if entry.file_type().is_dir() {
             if self.opened_dir_inos.contains(&entry.ino()) {
                 self.render_dir(workspace, &entry.path().to_path_buf(), depth);
@@ -275,13 +278,47 @@ impl WorkspaceModeData {
 
             Ok(false)
         } else {
-            let buffer = Buffer::from_file(&self.selected_path)?;
+            let buffer = Buffer::from_file(&self.selected_path, Some(&workspace.path))?;
             let id = workspace.add_buffer(buffer);
-            workspace.select_buffer(id);
-            monitor.init_buffer(workspace.current_buffer.as_mut().unwrap())?;
-            self.prev_buffer_id = id;
+            workspace.observe_buffer(id);
+            workspace.cancel_observe_buffer(self.prev_buffer_id);
+            monitor.init_buffer(workspace.current_buffer_mut().unwrap(), None)?;
+            monitor.swap_buffer_region(id, self.prev_buffer_id)?;
             Ok(true)
         }
+    }
+
+    pub fn open_with_split(
+        &mut self,
+        workspace: &mut Workspace,
+        monitor: &mut Monitor,
+        split_mode: SplitMode,
+    ) -> Result<()> {
+        if !self.selected_path.is_dir() {
+            if let Some(current_buffer) = workspace.get_buffer(self.prev_buffer_id) {
+                let prev_region = monitor
+                    .get_region_controller(current_buffer)
+                    .region()
+                    .clone();
+
+                let region_opt =
+                    monitor.split_region(prev_region, split_mode, 50, current_buffer, false)?;
+
+                let buffer = Buffer::from_file(&self.selected_path, Some(&workspace.path))?;
+                let id = workspace.add_buffer(buffer);
+                monitor.init_buffer(
+                    workspace.get_buffer_mut(id).chain_err(|| MissingBuffer)?,
+                    region_opt.map(|x| x.borrow().id()),
+                )?;
+
+                workspace.observe_buffer(id);
+                workspace.change_to_target_observation_buffer(id, monitor)?;
+                NormalRenderer::render_all(workspace, monitor)?;
+            } else {
+                self.open(workspace, monitor)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn move_down(&mut self) {
@@ -297,6 +334,24 @@ impl WorkspaceModeData {
         }
         self.selected_index -= 1;
     }
+
+    pub fn close(&mut self, workspace: &mut Workspace, monitor: &mut Monitor) -> Result<()> {
+        let to_close_region = monitor
+            .get_region_controller(workspace.current_buffer().chain_err(|| MissingBuffer)?)
+            .region()
+            .clone();
+        let region = to_close_region.borrow().father_id();
+
+        if let Some(region) = region {
+            let ret = monitor.merge_region(region, &to_close_region);
+            assert!(ret);
+            workspace.change_to_target_observation_buffer(self.prev_buffer_id, monitor)?;
+            workspace.cancel_observe_buffer(self.buffer_id);
+            self.has_region = false;
+        }
+
+        Ok(())
+    }
 }
 
 pub struct WorkspaceRender;
@@ -308,9 +363,18 @@ impl ModeRenderer for WorkspaceRender {
         mode: &mut super::ModeData,
     ) -> super::Result<()> {
         if let ModeData::Workspace(mode_data) = mode {
-            return mode_data.render_workspace_tree(workspace, monitor);
+            mode_data.render_workspace_tree(workspace, monitor)?;
+            return NormalRenderer::render(workspace, monitor, mode);
         } else {
             bail!("Workspace mode cannot receive data other than WorkspaceModeData")
         }
+    }
+
+    fn render_line_status(
+        workspace: &mut Workspace,
+        monitor: &mut Monitor,
+        mode: &mut ModeData,
+    ) -> Result<()> {
+        return NormalRenderer::render_line_status(workspace, monitor, mode);
     }
 }

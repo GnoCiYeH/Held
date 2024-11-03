@@ -9,16 +9,22 @@ use crossterm::{
     QueueableCommand,
 };
 use held_core::{
-    utils::position::Position,
+    utils::{distance::Distance, position::Position},
     view::{colors::Colors, style::CharStyle},
 };
+use unicode_segmentation::UnicodeSegmentation;
 
-use super::{Terminal, MIN_HEIGHT, MIN_WIDTH, TERMINAL_EXECUTE_ERROR};
+use super::{
+    terminal_cache_buffer::TerminalCachedBuffer, Terminal, MIN_HEIGHT, MIN_WIDTH,
+    TERMINAL_EXECUTE_ERROR,
+};
 use crate::errors::*;
 
 #[derive(Debug)]
 pub struct CrossTerminal {
     ansi_buffer: RefCell<Vec<u8>>,
+    current_position: RefCell<Option<Position>>,
+    cache: RefCell<TerminalCachedBuffer>,
 }
 
 unsafe impl Send for CrossTerminal {}
@@ -27,8 +33,11 @@ unsafe impl Sync for CrossTerminal {}
 impl CrossTerminal {
     pub fn new() -> Result<CrossTerminal> {
         crossterm::terminal::enable_raw_mode()?;
+        let (width, height) = crossterm::terminal::size()?;
         let terminal = CrossTerminal {
             ansi_buffer: RefCell::default(),
+            current_position: RefCell::default(),
+            cache: RefCell::new(TerminalCachedBuffer::new(width as usize, height as usize)),
         };
         terminal.clear()?;
         terminal.present()?;
@@ -162,8 +171,25 @@ impl Terminal for CrossTerminal {
         colors: Colors,
         content: &str,
     ) -> Result<()> {
+        // if self
+        //     .cache
+        //     .borrow_mut()
+        //     .compare_or_update(position, char_style, colors, content.into())
+        // {
+        //     return Ok(());
+        // }
         self.update_style(char_style, colors)?;
-        self.set_cursor(Some(*position))?;
+        if *self.current_position.borrow() != Some(*position) {
+            self.set_cursor(Some(*position))?;
+        }
+
+        *self.current_position.borrow_mut() = Some(
+            *position
+                + Distance {
+                    lines: 0,
+                    offset: content.graphemes(true).count(),
+                },
+        );
         self.buffer().queue(crossterm::style::Print(content))?;
         Ok(())
     }

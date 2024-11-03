@@ -14,6 +14,8 @@ pub enum Colors {
     PathMode,   // white/pink
     SearchMode, // white/purple
     SelectMode, // white/blue
+    RegionEdge,
+    FocusedRegionEdge,
     CustomForeground(Color),
     CustomFocusedForeground(Color),
     Custom(Color, Color),

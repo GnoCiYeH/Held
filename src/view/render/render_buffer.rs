@@ -41,6 +41,10 @@ impl CachedRenderBuffer {
         }
     }
 
+    pub fn clear_cache(&mut self) {
+        self.cells.fill(None);
+    }
+
     // 返回对应index是否与cell相等
     pub fn compare_and_update(&mut self, cell: &Cell, index: usize) -> bool {
         if index < self.cells.len() {
@@ -59,12 +63,14 @@ impl CachedRenderBuffer {
 
             if !equal {
                 let mut cache_cell = CachedCell::default();
-                let content_len = cell_content.len();
+                let content_len = cell_content.graphemes(true).count();
                 cache_cell.colors = cell.colors;
                 cache_cell.style = cell.style;
                 cache_cell.content = cell_content;
                 for i in (index + 1)..(index + content_len) {
-                    self.cells[i] = None
+                    if i < self.cells.len() {
+                        self.cells[i] = None
+                    }
                 }
 
                 self.cells[index] = Some(cache_cell);
@@ -103,10 +109,16 @@ impl<'a> RenderBuffer<'a> {
         if position.line >= self.height || position.offset >= self.width {
             return;
         }
+        let range = (position.line * self.width)
+            ..(position.line * self.width + self.width).min(self.cells.len() - 1);
+
         let index = position.line * self.width + position.offset;
-        if index < self.cells.len() {
+        if range.contains(&index) {
             self.cells[index] = cell;
         }
+        // if index < self.cells.len() {
+        //     self.cells[index] = cell;
+        // }
     }
 
     pub fn clear(&mut self) {
@@ -150,9 +162,10 @@ impl<'a> Iterator for RenderBufferIter<'a> {
             let cell = &self.cells[self.index];
             self.index += cell.content.graphemes(true).count().max(1);
 
-            if !self.cached.borrow_mut().compare_and_update(cell, index) {
-                return Some((position, cell));
-            }
+            // if !self.cached.borrow_mut().compare_and_update(cell, index) {
+            //     return Some((position, cell));
+            // }
+            return Some((position, cell));
         }
         None
     }

@@ -61,6 +61,17 @@ impl AddAssign<Distance> for Position {
     }
 }
 
+impl Add for Position {
+    type Output = Position;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Position {
+            line: self.line + rhs.line,
+            offset: self.offset + rhs.offset,
+        }
+    }
+}
+
 impl From<(usize, usize)> for Position {
     fn from(tuple: (usize, usize)) -> Self {
         let (line, offset) = tuple;

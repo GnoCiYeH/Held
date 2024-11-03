@@ -9,7 +9,7 @@ use super::cursor;
 pub fn insert_char(app: &mut Application) -> Result<()> {
     if let Some(key) = app.monitor.last_key {
         if let KeyCode::Char(c) = key.code {
-            app.workspace.current_buffer.as_mut().unwrap().insert(c);
+            app.workspace.current_buffer_mut().unwrap().insert(c);
             cursor::move_right(app)?;
         }
     }
@@ -17,14 +17,14 @@ pub fn insert_char(app: &mut Application) -> Result<()> {
 }
 
 pub fn new_line(app: &mut Application) -> Result<()> {
-    if let Some(ref mut buffer) = app.workspace.current_buffer {
+    if let Some(buffer) = app.workspace.current_buffer_mut() {
         buffer.insert('\n');
     }
     Ok(())
 }
 
 pub fn insert_tab(app: &mut Application) -> Result<()> {
-    if let Some(buffer) = app.workspace.current_buffer.as_mut() {
+    if let Some(buffer) = app.workspace.current_buffer_mut() {
         let tab_len = app.perferences.borrow().tab_width();
         let width = tab_len - (buffer.cursor.offset) % tab_len;
         if app.perferences.borrow().soft_tab() {

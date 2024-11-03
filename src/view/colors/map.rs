@@ -92,6 +92,22 @@ impl ColorMap for Theme {
                     b: 160,
                 },
             ),
+            Colors::RegionEdge => Colors::Custom(
+                Color::Rgb { r: 0, g: 0, b: 0 },
+                Color::Rgb {
+                    r: 105,
+                    g: 105,
+                    b: 105,
+                },
+            ),
+            Colors::FocusedRegionEdge => Colors::Custom(
+                Color::Rgb { r: 0, g: 0, b: 0 },
+                Color::Rgb {
+                    r: 190,
+                    g: 190,
+                    b: 190,
+                },
+            ),
             Colors::CustomForeground(custom_fg) => Colors::CustomForeground(custom_fg),
             Colors::CustomFocusedForeground(custom_fg) => Colors::Custom(custom_fg, alt_bg),
             Colors::Custom(custom_fg, custom_bg) => Colors::Custom(custom_fg, custom_bg),

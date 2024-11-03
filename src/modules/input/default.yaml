@@ -7,6 +7,9 @@ normal:
   i: app::to_insert_mode
   backspace: cursor::move_left
   w: app::to_workspace_mode
+  tab: workspace::next_observation_buffer
+  "=": monitor::zoom_up
+  "-": monitor::zoom_down
 insert:
   escape: app::to_normal_mode
   left: cursor::move_left
@@ -29,4 +32,7 @@ workspace:
   down: workspace::move_down
   enter: workspace::enter
   escape: workspace::to_normal_mode
+  c: workspace::close_dir_tree
+  v: workspace::open_with_vertical
+  h: workspace::open_with_horizon
   ctrl-c: app::exit

@@ -12,26 +12,30 @@ impl ModeRenderer for InsertRenderer {
         monitor: &mut crate::view::monitor::Monitor,
         _mode: &mut super::ModeData,
     ) -> super::Result<()> {
-        let mut presenter = monitor.build_presenter()?;
-
-        if let Some(buffer) = &workspace.current_buffer {
+        if let Some(buffer) = &workspace.current_buffer() {
+            let mut presenter = monitor.build_presenter()?;
             let data = buffer.data();
             presenter.print_buffer(buffer, &data, &workspace.syntax_set, None, None)?;
-
-            let mode_name_data = StatusLineData {
-                content: " INSERT ".to_string(),
-                color: Colors::Inverted,
-                style: CharStyle::Bold,
-            };
-            presenter.print_status_line(&[
-                mode_name_data,
-                buffer_status_data(&workspace.current_buffer),
-            ])?;
-
-            presenter.present()?;
-        } else {
+            presenter.present(true)?;
         }
 
+        Ok(())
+    }
+
+    fn render_line_status(
+        workspace: &mut crate::workspace::Workspace,
+        monitor: &mut crate::view::monitor::Monitor,
+        _mode: &mut super::ModeData,
+    ) -> super::Result<()> {
+        let mode_name_data = StatusLineData {
+            content: " INSERT ".to_string(),
+            color: Colors::Inverted,
+            style: CharStyle::Bold,
+        };
+        monitor.present_status_line(&[
+            mode_name_data,
+            buffer_status_data(workspace.current_buffer()),
+        ])?;
         Ok(())
     }
 }

@@ -7,6 +7,7 @@ use held_core::view::colors::Colors;
 use held_core::view::style::CharStyle;
 
 pub mod cross_terminal;
+pub(super) mod terminal_cache_buffer;
 
 pub(super) const MIN_WIDTH: u16 = 10;
 pub(super) const MIN_HEIGHT: u16 = 10;

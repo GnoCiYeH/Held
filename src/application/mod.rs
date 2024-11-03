@@ -92,6 +92,7 @@ impl Application {
         // self.monitor.terminal.clear().unwrap();
         self.init_modes()?;
         self.plugin_system.borrow().init();
+        ModeRouter::render_line_status(&mut self.workspace, &mut self.monitor, &mut self.mode)?;
         // if !self.bak {
         //     self.ui.start_page_ui()?;
         // }
@@ -165,9 +166,9 @@ impl Application {
         Ok(())
     }
 
-    pub fn switch_mode(&mut self, mode_key: ModeKey) {
+    pub fn switch_mode(&mut self, mode_key: ModeKey) -> Result<()> {
         if self.mode_key == mode_key {
-            return;
+            return Ok(());
         }
 
         let mut mode = self.mode_history.remove(&mode_key).unwrap();
@@ -177,9 +178,20 @@ impl Application {
         self.mode_history.insert(self.mode_key, mode);
 
         self.mode_key = mode_key;
+
+        return ModeRouter::render_line_status(
+            &mut self.workspace,
+            &mut self.monitor,
+            &mut self.mode,
+        );
     }
 
     fn handle_input(&mut self, event: Event) -> Result<()> {
+        if let Event::Resize(_, _) = event {
+            self.monitor.handle_resize();
+            return Ok(());
+        }
+
         let key = InputMapper::event_map_str(event);
         if key.is_none() {
             return Ok(());

@@ -8,11 +8,11 @@ pub struct StatusLineData {
     pub style: CharStyle,
 }
 
-pub fn buffer_status_data(buffer: &Option<Buffer>) -> StatusLineData {
+pub fn buffer_status_data(buffer: Option<&Buffer>) -> StatusLineData {
     if let Some(buffer) = buffer {
         let modified = buffer.modified();
         let (title, style) = buffer
-            .path
+            .relative_path()
             .as_ref()
             .map(|path| {
                 if modified {

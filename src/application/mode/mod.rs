@@ -129,6 +129,12 @@ impl ModeKey {
 
 pub trait ModeRenderer {
     fn render(workspace: &mut Workspace, monitor: &mut Monitor, mode: &mut ModeData) -> Result<()>;
+
+    fn render_line_status(
+        workspace: &mut Workspace,
+        monitor: &mut Monitor,
+        mode: &mut ModeData,
+    ) -> Result<()>;
 }
 
 pub struct ModeRouter;
@@ -140,6 +146,20 @@ impl ModeRenderer for ModeRouter {
             ModeData::Error(_) => ErrorRenderer::render(workspace, monitor, mode),
             ModeData::Insert => InsertRenderer::render(workspace, monitor, mode),
             ModeData::Workspace(_) => WorkspaceRender::render(workspace, monitor, mode),
+            ModeData::Exit => todo!(),
+        }
+    }
+
+    fn render_line_status(
+        workspace: &mut Workspace,
+        monitor: &mut Monitor,
+        mode: &mut ModeData,
+    ) -> Result<()> {
+        match mode {
+            ModeData::Normal => NormalRenderer::render_line_status(workspace, monitor, mode),
+            ModeData::Error(_) => ErrorRenderer::render_line_status(workspace, monitor, mode),
+            ModeData::Insert => InsertRenderer::render_line_status(workspace, monitor, mode),
+            ModeData::Workspace(_) => WorkspaceRender::render_line_status(workspace, monitor, mode),
             ModeData::Exit => todo!(),
         }
     }

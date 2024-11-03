@@ -12,6 +12,10 @@ error_chain! {
             description("the workspace is empty")
             display("the workspace is empty")
         }
+        MissingBuffer {
+            description("the buffer not found")
+            display("the buffer not found")
+        }
         MissingPath {
             description("buffer doesn't have a path")
             display("buffer doesn't have a path")

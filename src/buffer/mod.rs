@@ -25,7 +25,8 @@ mod operation;
 pub struct Buffer {
     pub id: Option<usize>,
     data: Rc<RefCell<GapBuffer>>,
-    pub path: Option<PathBuf>,
+    path: Option<PathBuf>,
+    relative_path: Option<PathBuf>,
     pub cursor: Cursor,
     history: History,
     operation_group: Option<OperationGroup>,
@@ -49,6 +50,7 @@ impl Default for Buffer {
             operation_group: None,
             syntax_definition: None,
             change_callback: None,
+            relative_path: None,
         }
     }
 }
@@ -58,11 +60,21 @@ impl Buffer {
         Buffer::default()
     }
 
-    pub fn from_file(path: &Path) -> io::Result<Buffer> {
+    pub fn from_file(path: &Path, workspace_dir: Option<&PathBuf>) -> io::Result<Buffer> {
         let content = fs::read_to_string(path)?;
 
         let data = Rc::new(RefCell::new(GapBuffer::new(content)));
         let cursor = Cursor::new(data.clone(), Position { line: 0, offset: 0 });
+
+        let relative_path = if let Some(workspace_dir) = workspace_dir {
+            if let Ok(relative) = path.strip_prefix(workspace_dir) {
+                Some(relative.to_path_buf())
+            } else {
+                Some(path.to_path_buf())
+            }
+        } else {
+            Some(path.to_path_buf())
+        };
 
         let mut buffer = Buffer {
             id: None,
@@ -73,6 +85,7 @@ impl Buffer {
             operation_group: None,
             syntax_definition: None,
             change_callback: None,
+            relative_path,
         };
 
         buffer.history.mark();
@@ -193,5 +206,27 @@ impl Buffer {
     pub fn id(&self) -> Result<usize> {
         self.id
             .ok_or_else(|| Error::from("Buffer ID doesn't exist"))
+    }
+
+    pub fn set_absolute_path(&mut self, path: PathBuf, workspace_dir: Option<&PathBuf>) {
+        let relative_path = if let Some(workspace_dir) = workspace_dir {
+            if let Ok(relative) = path.strip_prefix(workspace_dir) {
+                relative.to_path_buf()
+            } else {
+                path.to_path_buf()
+            }
+        } else {
+            path.to_path_buf()
+        };
+        self.path = Some(path);
+        self.relative_path = Some(relative_path);
+    }
+
+    pub fn absolute_path(&self) -> Option<PathBuf> {
+        self.path.clone()
+    }
+
+    pub fn relative_path(&self) -> Option<PathBuf> {
+        self.relative_path.clone()
     }
 }

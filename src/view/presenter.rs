@@ -3,11 +3,11 @@ use std::{borrow::Cow, cell::RefCell, fmt::Debug, rc::Rc};
 use super::{
     colors::map::ColorMap,
     monitor::Monitor,
+    region::Region,
     render::{
         lexeme_mapper::LexemeMapper,
         render_buffer::{Cell, RenderBuffer},
     },
-    status_data::StatusLineData,
 };
 use crate::{
     buffer::Buffer, errors::*, util::line_iterator::LineIterator, view::render::renderer::Renderer,
@@ -23,10 +23,16 @@ pub struct Presenter<'a> {
     theme: Theme,
     present_buffer: RenderBuffer<'a>,
     cursor_position: Option<Position>,
+    region: Rc<RefCell<dyn Region>>,
+    focused: bool,
 }
 
 impl<'a> Presenter<'a> {
-    pub fn new(monitor: &mut Monitor) -> Result<Presenter> {
+    pub fn new(
+        monitor: &mut Monitor,
+        region: Rc<RefCell<dyn Region>>,
+        focused: bool,
+    ) -> Result<Presenter> {
         let theme_name = monitor.perference.borrow().theme_name();
         let mut theme = monitor
             .first_theme()
@@ -37,15 +43,17 @@ impl<'a> Presenter<'a> {
                 .ok_or_else(|| format!("Couldn't find \"{}\" theme", theme_name))?;
         }
         let present_buffer = RenderBuffer::new(
-            monitor.width()?,
-            monitor.height()?,
-            monitor.cached_render_buffer.clone(),
+            region.borrow().width(true),
+            region.borrow().height(true),
+            region.borrow().cached_render_buffer(),
         );
         Ok(Presenter {
             view: monitor,
             theme,
             present_buffer,
             cursor_position: None,
+            region,
+            focused,
         })
     }
 
@@ -53,55 +61,26 @@ impl<'a> Presenter<'a> {
         self.cursor_position = Some(position);
     }
 
-    pub fn present(&self) -> Result<()> {
+    pub fn present(&self, set_cursor: bool) -> Result<()> {
+        if self.region.borrow().children().is_some() {
+            // 对于非根节点不允许渲染
+            return Ok(());
+        }
         for (position, cell) in self.present_buffer.iter() {
-            self.view
-                .terminal
-                .print(
-                    &position,
-                    cell.style,
-                    self.theme.map_colors(cell.colors),
-                    &cell.content,
-                )
-                .unwrap();
+            // 对于非边界的cell，需要对坐标进行修正
+            self.view.terminal.print(
+                &(position + self.region.borrow().rectangle(true).position),
+                cell.style,
+                self.theme.map_colors(cell.colors),
+                &cell.content,
+            )?
         }
 
-        self.view.terminal.set_cursor(self.cursor_position)?;
+        if set_cursor {
+            self.view.terminal.set_cursor(self.cursor_position)?;
+        }
+
         self.view.terminal.present()?;
-        Ok(())
-    }
-
-    pub fn print_status_line(&mut self, datas: &[StatusLineData]) -> Result<()> {
-        let line_width = self.view.terminal.width()?;
-        let line = self.view.terminal.height()? - 1;
-
-        let count = datas.len();
-        let mut offset = 0;
-        // 从左往右输出，最后一个参数在最后
-        for (index, data) in datas.iter().enumerate() {
-            let content = match count {
-                1 => {
-                    format!("{:width$}", data.content, width = line_width)
-                }
-                _ => {
-                    if index == count - 1 {
-                        format!(
-                            "{:width$}",
-                            data.content,
-                            width = line_width.saturating_sub(offset)
-                        )
-                    } else {
-                        data.content.to_owned()
-                    }
-                }
-            };
-
-            let len = content.len();
-            warn!("line {line}, offset {offset}, content {content}");
-            self.print(&Position { line, offset }, data.style, data.color, content);
-            offset += len;
-        }
-
         Ok(())
     }
 
@@ -114,7 +93,11 @@ impl<'a> Presenter<'a> {
         highlights: Option<&'a [(Range, CharStyle, Colors)]>,
         lexeme_mapper: Option<&'a mut dyn LexemeMapper>,
     ) -> Result<()> {
-        let scroll_offset = self.view.get_scroll_controller(buffer).line_offset();
+        if self.region.borrow().children().is_some() {
+            // 对于非根节点不允许渲染
+            return Ok(());
+        }
+        let scroll_offset = self.view.get_region_controller(buffer).line_offset();
         let lines = LineIterator::new(&buffer_data);
 
         let cursor_position = Renderer::new(
@@ -128,6 +111,8 @@ impl<'a> Presenter<'a> {
             syntax_set,
             scroll_offset,
             &mut self.view.plugin_system.borrow_mut(),
+            &self.region,
+            self.focused,
         )
         .render(lines, lexeme_mapper)?;
 
@@ -143,6 +128,10 @@ impl<'a> Presenter<'a> {
     where
         C: Into<Cow<'a, str>> + Debug,
     {
+        if self.region.borrow().children().is_some() {
+            // 对于非根节点不允许渲染
+            return;
+        }
         self.present_buffer.set_cell(
             *position,
             Cell {

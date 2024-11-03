@@ -4,15 +4,18 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::str::FromStr;
 
+use crate::encoding::Utf8Encoding;
 use crate::modules::perferences::Perferences;
 use crate::plugin::system::PluginSystem;
 use crate::view::colors::to_rgb;
+use crate::view::region::Region;
 use crate::{buffer::Buffer, util::line_iterator::LineIterator, view::terminal::Terminal};
 use crate::{errors::*, get_application};
 use crossterm::style::Color;
 use held_core::plugin::Plugin;
 use held_core::utils::position::Position;
 use held_core::utils::range::Range;
+use held_core::utils::rectangle::Rectangle;
 use held_core::view::colors::Colors;
 use held_core::view::render::ContentRenderBuffer;
 use held_core::view::style::CharStyle;
@@ -45,6 +48,10 @@ pub struct Renderer<'a, 'p> {
     current_style: Style,
     perferences: &'a dyn Perferences,
     plugin_system: &'a mut PluginSystem,
+    rectangle: Rectangle,
+    render_line_count: bool,
+    focused: bool,
+    current_use_width: usize,
 }
 
 impl<'a, 'p> Renderer<'a, 'p> {
@@ -59,9 +66,15 @@ impl<'a, 'p> Renderer<'a, 'p> {
         syntax_set: &'a SyntaxSet,
         scroll_offset: usize,
         plugin_system: &'a mut PluginSystem,
+        region: &Rc<RefCell<dyn Region>>,
+        focused: bool,
     ) -> Renderer<'a, 'p> {
         let line_number_iter = LineNumberStringIter::new(buffer, scroll_offset);
-        let content_start_of_line = line_number_iter.width() + 1;
+        let content_start_of_line = if region.borrow().render_line_count() {
+            line_number_iter.width() + 1
+        } else {
+            1
+        };
         Self {
             buffer,
             render_buffer,
@@ -79,6 +92,10 @@ impl<'a, 'p> Renderer<'a, 'p> {
             line_number_iter,
             content_start_of_line,
             plugin_system,
+            rectangle: region.borrow().rectangle(false),
+            render_line_count: region.borrow().render_line_count(),
+            focused,
+            current_use_width: 0,
         }
     }
 
@@ -155,7 +172,14 @@ impl<'a, 'p> Renderer<'a, 'p> {
         }
 
         self.render_plugins()?;
-
+        self.render_region_edge(
+            CharStyle::Bold,
+            if self.focused {
+                Colors::FocusedRegionEdge
+            } else {
+                Colors::RegionEdge
+            },
+        );
         Ok(self.cursor_position)
     }
 
@@ -180,7 +204,6 @@ impl<'a, 'p> Renderer<'a, 'p> {
         let mut offset = 0;
         let init_pos = buffer.rectangle.position;
 
-        warn!("plugin cells {:?}", buffer.cells);
         for cell in buffer.cells {
             if let Some(cell) = cell {
                 self.render_cell(
@@ -191,6 +214,7 @@ impl<'a, 'p> Renderer<'a, 'p> {
                     cell.style,
                     cell.colors,
                     cell.content.to_string(),
+                    true,
                 );
             }
 
@@ -222,7 +246,7 @@ impl<'a, 'p> Renderer<'a, 'p> {
     }
 
     fn after_visible(&self) -> bool {
-        self.screen_position.line >= (self.terminal.height().unwrap() - 1)
+        self.screen_position.line >= (self.rectangle.height)
     }
 
     fn before_visible(&self) -> bool {
@@ -233,10 +257,18 @@ impl<'a, 'p> Renderer<'a, 'p> {
         !self.before_visible() && !self.after_visible()
     }
 
+    fn absolute_screen_position(&self) -> Position {
+        Position {
+            line: self.screen_position.line + self.rectangle.position.line,
+            offset: self.screen_position.offset + self.rectangle.position.offset,
+        }
+    }
+
     fn set_cursor(&mut self) {
         if self.inside_visible() && *self.buffer.cursor == self.buffer_position {
-            self.cursor_position = Some(self.screen_position);
-            get_application().state_data.cursor_state.screen_position = self.screen_position;
+            let position = self.absolute_screen_position();
+            self.cursor_position = Some(position);
+            get_application().state_data.cursor_state.screen_position = position;
         }
     }
 
@@ -255,6 +287,10 @@ impl<'a, 'p> Renderer<'a, 'p> {
             self.set_cursor();
             self.render_rest_of_line();
             self.screen_position.line += 1;
+            if !self.render_line_count {
+                self.screen_position.offset = self.content_start_of_line;
+                self.current_use_width = self.content_start_of_line;
+            }
         }
 
         self.buffer_position.line += 1;
@@ -264,7 +300,9 @@ impl<'a, 'p> Renderer<'a, 'p> {
 
     fn render_rest_of_line(&mut self) {
         let on_cursor_line = self.on_cursor_line();
-        for offset in self.screen_position.offset..self.terminal.width().unwrap() {
+        for offset in self.screen_position.offset
+            ..(self.rectangle.width + self.screen_position.offset - self.current_use_width)
+        {
             let colors = if on_cursor_line {
                 Colors::Focused
             } else {
@@ -279,12 +317,13 @@ impl<'a, 'p> Renderer<'a, 'p> {
                 CharStyle::Default,
                 colors,
                 " ",
+                true,
             );
         }
     }
 
     fn render_line_number(&mut self) {
-        if !self.inside_visible() {
+        if !self.inside_visible() || !self.render_line_count {
             return;
         }
         let line_number = self.line_number_iter.next().unwrap();
@@ -304,6 +343,7 @@ impl<'a, 'p> Renderer<'a, 'p> {
             style,
             Colors::Focused,
             line_number,
+            true,
         );
 
         // 行号后的gap
@@ -320,13 +360,16 @@ impl<'a, 'p> Renderer<'a, 'p> {
             style,
             gap_color,
             " ",
+            true,
         );
 
         self.screen_position.offset = self.line_number_iter.width() + 1;
+        self.current_use_width = self.line_number_iter.width() + 1;
     }
 
     fn render_lexeme<T: Into<Cow<'a, str>>>(&mut self, lexeme: T) {
-        for character in lexeme.into().graphemes(true) {
+        let lexeme: Cow<'a, str> = lexeme.into();
+        for character in lexeme.graphemes(true) {
             if character == "\n" {
                 continue;
             }
@@ -337,9 +380,15 @@ impl<'a, 'p> Renderer<'a, 'p> {
             let (style, color) = self.current_char_style(token_color);
 
             if self.perferences.line_wrapping()
-                && self.screen_position.offset == self.terminal.width().unwrap() - 1
+                && self.current_use_width == self.rectangle.width - 1
             {
-                self.render_cell(self.screen_position, style, color, character.to_string());
+                self.render_cell(
+                    self.screen_position,
+                    style,
+                    color,
+                    character.to_string(),
+                    true,
+                );
                 self.buffer_position.offset += 1;
 
                 // 屏幕上换行但是渲染原来的line
@@ -347,25 +396,26 @@ impl<'a, 'p> Renderer<'a, 'p> {
                 let prefix = " ".repeat(prefix_len);
                 self.screen_position.offset = 0;
                 self.screen_position.line += 1;
-                self.render_cell(
-                    Position {
-                        line: self.screen_position.line,
-                        offset: self.screen_position.offset,
-                    },
-                    style,
-                    Colors::Default,
-                    prefix,
-                );
+
+                self.render_cell(self.screen_position, style, Colors::Default, prefix, true);
                 self.screen_position.offset += prefix_len;
+                self.current_use_width = prefix_len;
             } else if character == "\t" {
                 let tab_len = self.perferences.tab_width();
                 let width = tab_len - (self.screen_position.offset + 1) % tab_len;
                 let tab_str = " ".repeat(width);
                 self.render_lexeme(tab_str);
             } else {
-                self.render_cell(self.screen_position, style, color, character.to_string());
+                self.render_cell(
+                    self.screen_position,
+                    style,
+                    color,
+                    character.to_string(),
+                    true,
+                );
                 self.screen_position.offset += 1;
                 self.buffer_position.offset += 1;
+                self.current_use_width += Utf8Encoding::width(character);
             }
 
             // 退出循环前更新
@@ -379,7 +429,13 @@ impl<'a, 'p> Renderer<'a, 'p> {
         style: CharStyle,
         colors: Colors,
         content: C,
+        relative: bool,
     ) {
+        let position = if relative {
+            position + Position::new(1, 1)
+        } else {
+            position
+        };
         self.render_buffer.set_cell(
             position,
             Cell {
@@ -388,6 +444,40 @@ impl<'a, 'p> Renderer<'a, 'p> {
                 style,
             },
         );
+    }
+
+    pub fn render_region_edge(&mut self, style: CharStyle, colors: Colors) {
+        for offset in 0..self.rectangle.width + 2 {
+            self.render_cell((0, offset).into(), style, colors, " ", false);
+            self.render_cell(
+                (self.rectangle.height + 1, offset).into(),
+                style,
+                colors,
+                " ",
+                false,
+            );
+        }
+
+        for line in 0..self.rectangle.height + 2 {
+            self.render_cell((line, 0).into(), style, colors, " ", false);
+            self.render_cell(
+                (line, self.rectangle.width + 1).into(),
+                style,
+                colors,
+                " ",
+                false,
+            );
+        }
+
+        if let Some(ref path) = self.buffer.relative_path() {
+            self.render_cell(
+                (0, 1).into(),
+                style,
+                colors,
+                format!("{}", path.to_str().unwrap_or_default()),
+                false,
+            );
+        }
     }
 
     fn current_char_style(&self, token_color: Color) -> (CharStyle, Colors) {
@@ -464,7 +554,7 @@ mod tests {
     #[test]
     fn test_display() {
         let terminal = CrossTerminal::new().unwrap();
-        let mut buffer = Buffer::from_file(Path::new("src/main.rs")).unwrap();
+        let mut buffer = Buffer::from_file(Path::new("src/main.rs"), None).unwrap();
         let mut render_buffer = RenderBuffer::new(
             terminal.width().unwrap(),
             terminal.height().unwrap(),
@@ -500,6 +590,8 @@ mod tests {
                 &theme,
                 &syntax_set,
                 0,
+                todo!(),
+                todo!(),
                 todo!(),
             );
             renderer.render(LineIterator::new(&binding), None).unwrap();
